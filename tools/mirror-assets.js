@@ -223,13 +223,25 @@ function isValidDownload(localPath, response, buffer) {
 function localPathForAsset(assetPath) {
     if (assetPath.startsWith('http://') || assetPath.startsWith('https://')) {
         const url = new URL(assetPath);
-        const pathname = decodeURIComponent(url.pathname.replace(/^\/+/, '')) || 'index.html';
+        const pathname = safeRelativePath(url.pathname);
+
+        // The target site's absolute URLs belong directly under the mirror root.
+        // Only third-party hosts need their own hostname directory.
+        if (url.hostname === new URL(TARGET_HOST).hostname) {
+            return path.join(ROOT, MIRROR_NAME, pathname);
+        }
+
         return path.join(ROOT, MIRROR_NAME, url.hostname, pathname);
     }
 
-    const cleanPath = decodeURIComponent(assetPath.replace(/^\/+/, '')) || 'index.html';
+    const cleanPath = safeRelativePath(assetPath);
     const finalPath = path.extname(cleanPath) ? cleanPath : path.posix.join(cleanPath, 'index.html');
     return path.join(ROOT, MIRROR_NAME, finalPath);
+}
+
+function safeRelativePath(rawPath) {
+    const decoded = decodeURIComponent(rawPath).replace(/\\/g, '/');
+    return path.posix.normalize(`/${decoded}`).replace(/^\/+/, '') || 'index.html';
 }
 
 function remoteUrlForAsset(assetPath) {

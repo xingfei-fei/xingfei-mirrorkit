@@ -22,6 +22,11 @@ const MIRROR_NAME = process.env.MIRROR_NAME || 'example.com';
 // 默认从根路径 / 开始；换网站时可以改成 /cn、/zh-hans、/home 等。
 const START_PATH = process.env.START_PATH || '/';
 
+// MIRROR_AT_ROOT：让单页应用可以直接占用 / 路径。
+// 部分站点会在运行时把 history 改回 /；开启后刷新仍然返回镜像首页。
+// 默认关闭，不改变既有镜像的外层说明页行为。
+const MIRROR_AT_ROOT = process.env.MIRROR_AT_ROOT === '1';
+
 // REQUEST_TIMEOUT_MS：单个远程请求超时时间，防止某个资源一直卡住。
 const REQUEST_TIMEOUT_MS = Number(process.env.PROXY_TIMEOUT_MS || 30000);
 
@@ -39,7 +44,9 @@ const BUILTIN_REMOTE_MIRRORS = [];
 // 这些通常不是目标网站资源，不缓存，避免日志刷屏。
 const IGNORED_PATH_PREFIXES = [
     '/.well-known/',
-    '/bb-mcp'
+    '/bb-mcp',
+    `/${MIRROR_NAME}/www.googletagmanager.com/`,
+    `/${MIRROR_NAME}/www.google-analytics.com/`
 ];
 
 // ====== 通用规则区：不是某个网站专用，不要随便删 ======
@@ -411,11 +418,21 @@ async function proxyAndCache(req, res, localPath, reqPath) {
         fs.writeFileSync(localPath, buffer);
         console.log(`\x1b[32m[Saved] ${localPath}\x1b[0m`);
 
+        // Make the first cache-miss response behave like later cache hits.
+        // Otherwise newly visited pages still point at the live site until reload.
+        const ext = path.extname(localPath).toLowerCase();
+        let responseBuffer = buffer;
+        if (REWRITE_TEXT_EXTS.has(ext) || ext === '') {
+            responseBuffer = Buffer.from(rewriteTextForLocalMirror(buffer.toString('utf8')));
+        } else if (EXTERNAL_URL_REWRITE_TEXT_EXTS.has(ext)) {
+            responseBuffer = Buffer.from(rewriteExternalUrlsForLocalMirror(buffer.toString('utf8')));
+        }
+
         res.writeHead(200, {
-            'Content-Type': getContentType(localPath, buffer),
+            'Content-Type': getContentType(localPath, responseBuffer),
             'Access-Control-Allow-Origin': '*'
         });
-        res.end(buffer);
+        res.end(responseBuffer);
     } catch (err) {
         const status = err.name === 'AbortError' ? 504 : 500;
         console.error(`\x1b[31m[Error] ${req.url}: ${err.message}\x1b[0m`);
@@ -440,9 +457,11 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
-    // 外层 / 永远打开框架说明页。
-    // 目标站点入口请访问 /MIRROR_NAME/START_PATH，例如 /example.com/。
-    const reqPath = parsedUrl.pathname === '/' ? '/index.html' : parsedUrl.pathname;
+    // 默认在 / 打开框架说明页；MIRROR_AT_ROOT=1 时直接打开镜像。
+    // 带文件夹的镜像入口始终可用，例如 /example.com/。
+    const reqPath = parsedUrl.pathname === '/'
+        ? (MIRROR_AT_ROOT ? `/${MIRROR_NAME}/` : '/index.html')
+        : parsedUrl.pathname;
 
     // 给外层 index.html 用的运行时配置。
     // 这样启动页不用写死 /example.com/，会自动读取当前 server.js 顶部配置。
@@ -495,6 +514,7 @@ server.listen(PORT, () => {
     console.log(`Mirror folder: \x1b[32m${MIRROR_NAME}\x1b[0m`);
     console.log(`Local starter: \x1b[32mhttp://localhost:${PORT}/\x1b[0m`);
     console.log(`Mirror entry: \x1b[32mhttp://localhost:${PORT}${getMirrorEntryPath()}\x1b[0m`);
+    console.log(`Mirror at root: ${MIRROR_AT_ROOT ? '\x1b[32menabled\x1b[0m' : 'disabled'}`);
     console.log(`Request timeout: ${REQUEST_TIMEOUT_MS}ms`);
     console.log('Unexpected HTML fallback responses will not be cached as assets.');
     console.log('----------------------------------------------------------\n');
